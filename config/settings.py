@@ -6,20 +6,19 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-production-key-replace-me")
-# Force DEBUG=True for local testing if not explicitly set to 0
+SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-prod-key-702")
 DEBUG = os.getenv("DEBUG", "1") == "1"
 
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
+    "corsheaders", # Must be before django.contrib.staticfiles
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
     "accounts",
@@ -27,7 +26,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",
+    "corsheaders.middleware.CorsMiddleware", # MUST BE AT THE TOP
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -61,7 +60,7 @@ DATABASES = {
     )
 }
 
-AUTH_PASSWORD_VALIDATORS = [] # Disabled for easier testing
+AUTH_PASSWORD_VALIDATORS = []
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Asia/Karachi"
@@ -75,8 +74,9 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-# Allow all origins for local network testing
+# Loose CORS for easier production setup
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
