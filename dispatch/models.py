@@ -1,7 +1,8 @@
 from django.db import models
-
+from django.conf import settings
 
 class Mechanic(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='mechanic_profile', null=True, blank=True)
     name = models.CharField(max_length=120)
     phone = models.CharField(max_length=30, blank=True)
     city = models.CharField(max_length=80, blank=True)
@@ -27,6 +28,7 @@ class ServiceRequest(models.Model):
         (COMPLETED, "Completed"),
     ]
 
+    customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='service_requests', null=True, blank=True)
     customer_name = models.CharField(max_length=120)
     customer_phone = models.CharField(max_length=30, blank=True)
     vehicle_type = models.CharField(max_length=40, default="car")
@@ -55,9 +57,14 @@ class Offer(models.Model):
 
 
 class ChatMessage(models.Model):
+    SENT = "sent"
+    DELIVERED = "delivered"
+    READ = "read"
+    STATUS_CHOICES = [(SENT, "Sent"), (DELIVERED, "Delivered"), (READ, "Read")]
+
     request = models.ForeignKey(ServiceRequest, on_delete=models.CASCADE, related_name="messages")
     sender_name = models.CharField(max_length=120)
     sender_role = models.CharField(max_length=20, choices=[("customer", "Customer"), ("mechanic", "Mechanic")])
     message = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=SENT)
     created_at = models.DateTimeField(auto_now_add=True)
-

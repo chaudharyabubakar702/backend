@@ -13,8 +13,27 @@ class RegisterAPIView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
 
+    def create(self, request, *args, **kwargs):
+        """Override to log validation errors so running server shows why a 400 occurred."""
+        serializer = self.get_serializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception as exc:
+            # Log helpful debug info to server console
+            try:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error("Register validation failed. data=%s errors=%s", request.data, getattr(serializer, 'errors', exc))
+            except Exception:
+                print("Register validation failed.", request.data, getattr(serializer, 'errors', exc))
+            raise
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=201, headers=headers)
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
+    # Ensure the serializer knows that the username field for our User model is the email
+    username_field = User.USERNAME_FIELD
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)

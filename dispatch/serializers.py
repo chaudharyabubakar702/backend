@@ -38,4 +38,3 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "platform_commission", "created_at", "offers", "messages",
         ]
         read_only_fields = ["status", "assigned_mechanic_name", "final_price", "platform_commission", "created_at", "offers", "messages"]
-

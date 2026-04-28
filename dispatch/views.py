@@ -1,5 +1,6 @@
 from decimal import Decimal
 from math import radians, cos, sin, sqrt, atan2
+import logging
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -8,7 +9,10 @@ from rest_framework.response import Response
 from .demo_data import seed_demo_data
 from .models import Mechanic, ServiceRequest, Offer, ChatMessage
 from .serializers import MechanicSerializer, ServiceRequestSerializer, OfferSerializer, ChatMessageSerializer
+from accounts.models import User
+from config.firebase_config import send_push_notification
 
+logger = logging.getLogger(__name__)
 
 def haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0
@@ -17,7 +21,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return r * c
-
 
 class MechanicViewSet(viewsets.ModelViewSet):
     queryset = Mechanic.objects.all().order_by("name")
@@ -46,13 +49,20 @@ class MechanicViewSet(viewsets.ModelViewSet):
         items.sort(key=lambda x: x["distance_km"])
         return Response(items)
 
-
 class ServiceRequestViewSet(viewsets.ModelViewSet):
-    queryset = ServiceRequest.objects.select_related("assigned_mechanic").prefetch_related("offers", "messages").order_by("-created_at")
+    queryset = ServiceRequest.objects.select_related("assigned_mechanic", "customer").prefetch_related("offers", "messages").order_by("-created_at")
     serializer_class = ServiceRequestSerializer
 
     def perform_create(self, serializer):
-        serializer.save()
+        instance = serializer.save(customer=self.request.user)
+        mechanic_users = User.objects.filter(role=User.MECHANIC, fcm_token__isnull=False)
+        for user in mechanic_users:
+            send_push_notification(
+                token=user.fcm_token,
+                title="New Service Request Nearby!",
+                body=f"{instance.customer_name} needs help with a {instance.vehicle_type}: {instance.issue_type}",
+                data={"type": "new_request", "request_id": str(instance.id)}
+            )
 
     @action(detail=True, methods=["post"])
     def accept_offer(self, request, pk=None):
@@ -65,13 +75,19 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         service_request.final_price = offer.amount
         service_request.status = ServiceRequest.ACCEPTED
         service_request.save(update_fields=["assigned_mechanic", "final_price", "status"])
+        
+        if service_request.customer and service_request.customer.fcm_token:
+            send_push_notification(
+                token=service_request.customer.fcm_token,
+                title="Request Accepted!",
+                body=f"Mechanic {offer.mechanic.name} has accepted your request.",
+                data={"type": "request_accepted", "request_id": str(service_request.id)}
+            )
+            
         return Response(ServiceRequestSerializer(service_request).data)
 
     @action(detail=True, methods=["post"], url_path="accept")
     def accept_request(self, request, pk=None):
-        """Allow a mechanic to accept an open request by providing mechanic id in payload.
-        Payload: { "mechanic_id": <id> }
-        """
         service_request = self.get_object()
         if service_request.status != ServiceRequest.OPEN and service_request.status != ServiceRequest.NEGOTIATING:
             return Response({"detail": "Request is not open for acceptance."}, status=status.HTTP_400_BAD_REQUEST)
@@ -88,6 +104,14 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         service_request.assigned_mechanic = mechanic
         service_request.status = ServiceRequest.ACCEPTED
         service_request.save(update_fields=["assigned_mechanic", "status"])
+
+        if service_request.customer and service_request.customer.fcm_token:
+            send_push_notification(
+                token=service_request.customer.fcm_token,
+                title="Request Accepted!",
+                body=f"Mechanic {mechanic.name} has accepted your request.",
+                data={"type": "request_accepted", "request_id": str(service_request.id)}
+            )
 
         return Response(ServiceRequestSerializer(service_request).data)
 
@@ -107,7 +131,6 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             "mechanic_payout": str((service_request.final_price - commission).quantize(Decimal("0.01"))),
         })
 
-
 class OfferViewSet(viewsets.ModelViewSet):
     queryset = Offer.objects.select_related("request", "mechanic").order_by("-created_at")
     serializer_class = OfferSerializer
@@ -117,14 +140,61 @@ class OfferViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         return qs.filter(request_id=request_id) if request_id else qs
 
-
 class ChatMessageViewSet(viewsets.ModelViewSet):
     queryset = ChatMessage.objects.select_related("request").order_by("created_at")
     serializer_class = ChatMessageSerializer
 
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        req = instance.request
+        recipient_user = None
+        
+        # Logging to debug why notifications aren't sending on messages
+        logger.info(f"New message from {instance.sender_name} ({instance.sender_role}) for Request #{req.id}")
+        
+        if instance.sender_role == 'customer':
+            # Recipient is mechanic
+            if req.assigned_mechanic:
+                recipient_user = req.assigned_mechanic.user
+                logger.info(f"Recipient is Mechanic: {req.assigned_mechanic.name}, User Found: {recipient_user}")
+        else:
+            # Recipient is customer
+            recipient_user = req.customer
+            logger.info(f"Recipient is Customer, User Found: {recipient_user}")
+        
+        if recipient_user and recipient_user.fcm_token:
+            logger.info(f"Sending notification to {recipient_user.username} (Token: {recipient_user.fcm_token[:10]}...)")
+            send_push_notification(
+                token=recipient_user.fcm_token,
+                title=f"New Message from {instance.sender_name}",
+                body=instance.message[:100],
+                data={"type": "new_message", "request_id": str(req.id)}
+            )
+        else:
+            logger.warning(f"Could not send notification: recipient_user={recipient_user}, has_token={bool(recipient_user.fcm_token) if recipient_user else False}")
+
     def get_queryset(self):
         request_id = self.request.query_params.get("request")
         qs = super().get_queryset()
-        return qs.filter(request_id=request_id) if request_id else qs
+        if request_id:
+            qs = qs.filter(request_id=request_id)
+            user_role = getattr(self.request.user, 'role', None)
+            if user_role:
+                other_role = 'mechanic' if user_role == 'customer' else 'customer'
+                qs.filter(sender_role=other_role, status=ChatMessage.SENT).update(status=ChatMessage.DELIVERED)
+        return qs
 
-
+    @action(detail=False, methods=["post"])
+    def mark_read(self, request):
+        request_id = request.data.get("request")
+        user_role = getattr(request.user, 'role', None)
+        if not request_id or not user_role:
+            return Response({"detail": "request and user role required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        other_role = 'mechanic' if user_role == 'customer' else 'customer'
+        ChatMessage.objects.filter(
+            request_id=request_id, 
+            sender_role=other_role
+        ).exclude(status=ChatMessage.READ).update(status=ChatMessage.READ)
+        
+        return Response({"status": "messages marked as read"})
