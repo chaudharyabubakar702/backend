@@ -26,6 +26,18 @@ class MechanicViewSet(viewsets.ModelViewSet):
     queryset = Mechanic.objects.all().order_by("name")
     serializer_class = MechanicSerializer
 
+    def perform_update(self, serializer):
+        mechanic = serializer.save()
+        if getattr(self.request.user, 'role', None) == User.MECHANIC:
+            if hasattr(self.request.user, 'mechanic_profile') and self.request.user.mechanic_profile != mechanic:
+                old_mechanic = self.request.user.mechanic_profile
+                old_mechanic.user = None
+                old_mechanic.save(update_fields=["user"])
+                
+            if mechanic.user != self.request.user:
+                mechanic.user = self.request.user
+                mechanic.save(update_fields=["user"])
+
     def list(self, request, *args, **kwargs):
         if not Mechanic.objects.exists():
             seed_demo_data()
@@ -52,6 +64,28 @@ class MechanicViewSet(viewsets.ModelViewSet):
 class ServiceRequestViewSet(viewsets.ModelViewSet):
     queryset = ServiceRequest.objects.select_related("assigned_mechanic", "customer").prefetch_related("offers", "messages").order_by("-created_at")
     serializer_class = ServiceRequestSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        
+        if not user.is_authenticated:
+            return qs.none()
+            
+        if user.role == User.ADMIN:
+            return qs
+            
+        if user.role == User.CUSTOMER:
+            return qs.filter(customer=user)
+            
+        if user.role == User.MECHANIC:
+            from django.db.models import Q
+            return qs.filter(
+                Q(assigned_mechanic__user=user) | 
+                Q(status__in=[ServiceRequest.OPEN, ServiceRequest.NEGOTIATING])
+            )
+            
+        return qs.none()
 
     def perform_create(self, serializer):
         instance = serializer.save(customer=self.request.user)
@@ -100,6 +134,18 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             mechanic = Mechanic.objects.get(id=mechanic_id)
         except Mechanic.DoesNotExist:
             return Response({"detail": "Mechanic not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Ensure the mechanic profile is linked to the current logged in user
+        if getattr(request.user, 'role', None) == User.MECHANIC:
+            # Unlink previous mechanic profile if switching
+            if hasattr(request.user, 'mechanic_profile') and request.user.mechanic_profile != mechanic:
+                old_mechanic = request.user.mechanic_profile
+                old_mechanic.user = None
+                old_mechanic.save(update_fields=["user"])
+            
+            if mechanic.user != request.user:
+                mechanic.user = request.user
+                mechanic.save(update_fields=["user"])
 
         service_request.assigned_mechanic = mechanic
         service_request.status = ServiceRequest.ACCEPTED
