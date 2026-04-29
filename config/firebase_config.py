@@ -39,12 +39,12 @@ def send_push_notification(token, title, body, data=None):
         logger.error("Cannot send notification: Firebase Admin not initialized.")
         return None
         
+    payload_data = data or {}
+    payload_data["title"] = title
+    payload_data["body"] = body
+
     message = messaging.Message(
-        notification=messaging.Notification(
-            title=title,
-            body=body,
-        ),
-        data=data or {},
+        data=payload_data,
         token=token,
     )
     try:
